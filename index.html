@@ -33,27 +33,33 @@
   ::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
 
   header{
-    display:flex;align-items:center;gap:.6rem;
+    display:flex;flex-wrap:wrap;align-items:center;gap:.5rem .7rem;
     padding:.7rem .9rem;padding-top:calc(.7rem + env(safe-area-inset-top,0px));
     border-bottom:1px solid var(--border);background:var(--panel);flex-shrink:0;
   }
+  .header-title{display:flex;align-items:center;gap:.5rem;flex:1 1 100%;min-width:0}
   header h1{font-size:.95rem;font-weight:700;margin:0;letter-spacing:.01em}
-  .live{display:flex;align-items:center;gap:.35rem;font-size:.72rem;color:var(--muted)}
+  .live{display:flex;align-items:center;gap:.35rem;font-size:.72rem;color:var(--muted);flex-shrink:0}
   .live .dot{width:7px;height:7px;border-radius:50%;background:var(--live);box-shadow:0 0 6px var(--live)}
-  header .spacer{flex:1}
+  .header-actions{display:flex;align-items:center;gap:.5rem;flex:1 1 100%;justify-content:space-between}
   .btn{
     font-family:var(--ui);font-size:.78rem;font-weight:600;color:var(--text);
     background:var(--panel2);border:1px solid var(--border);border-radius:7px;
-    padding:.4rem .65rem;cursor:pointer;white-space:nowrap;
+    padding:.4rem .65rem;cursor:pointer;white-space:nowrap;flex-shrink:0;
   }
   .btn:active{background:var(--border)}
   .btn.primary{background:var(--accent);color:#221703;border-color:var(--accent)}
-  .toggle{display:flex;background:var(--panel2);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  .toggle{display:flex;background:var(--panel2);border:1px solid var(--border);border-radius:8px;overflow:hidden;flex-shrink:0}
   .toggle button{
     font-family:var(--ui);font-size:.78rem;font-weight:600;color:var(--muted);
-    background:transparent;border:none;padding:.4rem .7rem;cursor:pointer;
+    background:transparent;border:none;padding:.4rem .7rem;cursor:pointer;white-space:nowrap;
   }
   .toggle button.active{background:var(--accent);color:#221703}
+
+  @media (min-width:640px){
+    .header-title{flex:0 1 auto}
+    .header-actions{flex:0 0 auto;margin-left:auto}
+  }
 
   .files{
     display:flex;gap:.4rem;padding:.55rem .7rem;overflow-x:auto;flex-shrink:0;
@@ -130,14 +136,17 @@
 </head>
 <body>
 <header>
-  <h1>HTML MASTER EDITOR</h1>
-  <span class="live"><span class="dot"></span>LIVE</span>
-  <div class="spacer"></div>
-  <div class="toggle" id="viewToggle">
-    <button data-v="code" class="active">Código</button>
-    <button data-v="preview">Vista</button>
+  <div class="header-title">
+    <h1>HTML MASTER EDITOR</h1>
+    <span class="live"><span class="dot"></span>LIVE</span>
   </div>
-  <button class="btn primary" id="downloadBtn">Descargar</button>
+  <div class="header-actions">
+    <div class="toggle" id="viewToggle">
+      <button data-v="code" class="active">Código</button>
+      <button data-v="preview">Vista</button>
+    </div>
+    <button class="btn primary" id="downloadBtn">Descargar</button>
+  </div>
 </header>
 
 <div class="files" id="fileRow"></div>
@@ -307,14 +316,43 @@ function buildPreview(entryName){
   html = html.replace(/<script[^>]+src=["'][^"']*["'][^>]*>\s*<\/script>/gi, '');
   const css = files.filter(f => detectType(f.name)==='css').map(f => f.content).join('\n');
   const js = files.filter(f => detectType(f.name)==='js').map(f => f.content).join('\n');
+  const htmlNames = files.filter(f => detectType(f.name)==='html').map(f => f.name);
   const styleTag = `<style>${css}</style>`;
   const scriptTag = `<script>${js}<\/script>`;
+  // navegación entre las páginas del propio proyecto: intercepta clics en <a href="otro.html">
+  // para cambiar la vista previa al archivo virtual correspondiente, en vez de que el iframe
+  // intente cargar una URL real (que no existe y produce 404).
+  const navScript = `<script>(function(){
+  var HTML_FILES = ${JSON.stringify(htmlNames)};
+  function norm(h){ h = h.split('#')[0].split('?')[0]; h = h.replace(/^\\.?\\/+/, ''); return h.toLowerCase(); }
+  document.addEventListener('click', function(e){
+    var a = e.target.closest('a');
+    if(!a) return;
+    var href = a.getAttribute('href');
+    if(!href || href.charAt(0) === '#') return;
+    if(/^[a-z][a-z0-9+.\\-]*:/i.test(href)) return; // enlaces externos, mailto:, tel:, etc. se comportan normal
+    if(a.target === '_blank') return;
+    var target = norm(href);
+    var match = HTML_FILES.find(function(n){ return n.toLowerCase() === target; });
+    e.preventDefault();
+    if(match) window.parent.postMessage({source:'html-master-editor', type:'navigate', file: match}, '*');
+  });
+  })();<\/script>`;
   if(html.includes('</head>')) html = html.replace('</head>', styleTag + '</head>');
   else html = styleTag + html;
-  if(html.includes('</body>')) html = html.replace('</body>', scriptTag + '</body>');
-  else html += scriptTag;
+  if(html.includes('</body>')) html = html.replace('</body>', scriptTag + navScript + '</body>');
+  else html += scriptTag + navScript;
   return html;
 }
+
+window.addEventListener('message', (e) => {
+  if(e.data && e.data.source === 'html-master-editor' && e.data.type === 'navigate'){
+    if(files.some(f => f.name === e.data.file)){
+      previewSelect.value = e.data.file;
+      updatePreview();
+    }
+  }
+});
 
 let debounceT;
 function updatePreview(){
