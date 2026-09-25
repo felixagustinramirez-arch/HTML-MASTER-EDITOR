@@ -41,6 +41,7 @@
   header h1{font-size:.95rem;font-weight:700;margin:0;letter-spacing:.01em}
   .live{display:flex;align-items:center;gap:.35rem;font-size:.72rem;color:var(--muted);flex-shrink:0}
   .live .dot{width:7px;height:7px;border-radius:50%;background:var(--live);box-shadow:0 0 6px var(--live)}
+  .save-status{font-size:.7rem;color:var(--muted);flex-shrink:0;opacity:0;transition:opacity .4s}
   .header-actions{display:flex;align-items:center;gap:.5rem;flex:1 1 100%;justify-content:space-between}
   .btn{
     font-family:var(--ui);font-size:.78rem;font-weight:600;color:var(--text);
@@ -75,7 +76,12 @@
   .file-chip .del{color:var(--muted);font-size:.85rem;padding-left:.15rem}
   .file-chip .del:active{color:#ff6b6b}
   .file-chip.add{color:var(--accent);border-style:dashed}
+  .file-chip.add.danger{color:#ff8a80;border-color:#5a2a2a}
   .file-chip.asset{cursor:default}
+  .folder-label{
+    display:flex;align-items:center;font-size:.72rem;color:var(--muted);
+    padding:0 .2rem;flex-shrink:0;white-space:nowrap;
+  }
 
   main{flex:1;display:flex;flex-direction:column;min-height:0}
   .pane{flex:1;display:none;min-height:0;flex-direction:column}
@@ -120,6 +126,7 @@
   }
   .modal input:focus{border-color:var(--accent)}
   .modal .err{color:#ff8a80;font-size:.74rem;min-height:1.1rem;margin-top:.4rem}
+  .modal .hint{color:var(--muted);font-size:.72rem;margin-top:.4rem}
   .modal .row{display:flex;gap:.5rem;margin-top:.8rem;justify-content:flex-end}
 
   .autocomplete{
@@ -140,6 +147,7 @@
   <div class="header-title">
     <h1>HTML MASTER EDITOR</h1>
     <span class="live"><span class="dot"></span>LIVE</span>
+    <span class="save-status" id="saveStatus"></span>
   </div>
   <div class="header-actions">
     <div class="toggle" id="viewToggle">
@@ -152,6 +160,8 @@
 
 <div class="files" id="fileRow"></div>
 <input type="file" id="assetInput" accept="image/*,.pdf,.svg,.ico,.txt,.json,.csv,.woff,.woff2,.mp3,.mp4,.wav,.webm" multiple style="display:none">
+<input type="file" id="importInput" multiple style="display:none">
+<input type="file" id="importFolderInput" multiple webkitdirectory style="display:none">
 
 <main>
   <section class="pane active" id="codePane">
@@ -173,11 +183,23 @@
 <div class="overlay" id="fileOverlay">
   <div class="modal">
     <h2>Nuevo archivo</h2>
-    <input id="fileNameInput" placeholder="about.html, theme.css, app.js…" autocomplete="off">
+    <input id="fileNameInput" placeholder="about.html, css/theme.css, paginas/menu.html…" autocomplete="off">
+    <p class="hint">Usa "carpeta/archivo.html" para crear una subcarpeta.</p>
     <div class="err" id="fileNameErr"></div>
     <div class="row">
       <button class="btn" id="fileCancelBtn">Cancelar</button>
       <button class="btn primary" id="fileCreateBtn">Crear</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="clearOverlay">
+  <div class="modal">
+    <h2>¿Borrar todo el proyecto?</h2>
+    <p class="hint">Se perderán todos los archivos, imágenes y documentos, incluido lo guardado en este dispositivo. No se puede deshacer.</p>
+    <div class="row">
+      <button class="btn" id="clearCancelBtn">Cancelar</button>
+      <button class="btn primary" id="clearConfirmBtn" style="background:#ff6b6b;border-color:#ff6b6b;color:#2a0000">Borrar todo</button>
     </div>
   </div>
 </div>
@@ -238,6 +260,8 @@ function nameTaken(name){
   const n = name.toLowerCase();
   return files.some(f => f.name.toLowerCase() === n) || assets.some(a => a.name.toLowerCase() === n);
 }
+function folderOf(name){ const i = name.lastIndexOf('/'); return i === -1 ? '' : name.slice(0, i); }
+function baseNameOf(name){ const i = name.lastIndexOf('/'); return i === -1 ? name : name.slice(i + 1); }
 
 const fileRow = document.getElementById('fileRow');
 const editor = document.getElementById('editor');
@@ -245,28 +269,45 @@ const activeFileName = document.getElementById('activeFileName');
 const previewSelect = document.getElementById('previewSelect');
 const previewFrame = document.getElementById('preview');
 
-function save(){ files[activeIndex].content = editor.value; }
+function save(){ files[activeIndex].content = editor.value; scheduleAutoSave(); }
 
 function renderFiles(){
   fileRow.innerHTML = '';
-  files.forEach((f, i) => {
-    const t = detectType(f.name);
-    const chip = document.createElement('div');
-    chip.className = 'file-chip' + (i===activeIndex ? ' active' : '');
-    chip.innerHTML = `<span class="dot" style="background:${typeColor[t]}"></span><span>${f.name}</span><span class="del">✕</span>`;
-    chip.querySelector('span:nth-child(2)').onclick = () => selectFile(i);
-    chip.querySelector('.dot').onclick = () => selectFile(i);
-    chip.querySelector('.del').onclick = (e) => { e.stopPropagation(); deleteFile(i); };
-    fileRow.appendChild(chip);
+  const groups = {};
+  files.forEach((f, i) => (groups[folderOf(f.name)] = groups[folderOf(f.name)] || []).push({kind:'file', i}));
+  assets.forEach((a, i) => (groups[folderOf(a.name)] = groups[folderOf(a.name)] || []).push({kind:'asset', i}));
+  const folderNames = Object.keys(groups).sort((a,b) => a === '' ? -1 : b === '' ? 1 : a.localeCompare(b));
+
+  folderNames.forEach(folder => {
+    if(folder){
+      const label = document.createElement('div');
+      label.className = 'folder-label';
+      label.textContent = '📁 ' + folder;
+      fileRow.appendChild(label);
+    }
+    groups[folder].forEach(entry => {
+      if(entry.kind === 'file'){
+        const i = entry.i, f = files[i], t = detectType(f.name);
+        const chip = document.createElement('div');
+        chip.className = 'file-chip' + (i===activeIndex ? ' active' : '');
+        chip.title = f.name;
+        chip.innerHTML = `<span class="dot" style="background:${typeColor[t]}"></span><span>${baseNameOf(f.name)}</span><span class="del">✕</span>`;
+        chip.querySelector('span:nth-child(2)').onclick = () => selectFile(i);
+        chip.querySelector('.dot').onclick = () => selectFile(i);
+        chip.querySelector('.del').onclick = (e) => { e.stopPropagation(); deleteFile(i); };
+        fileRow.appendChild(chip);
+      } else {
+        const i = entry.i, a = assets[i];
+        const chip = document.createElement('div');
+        chip.className = 'file-chip asset';
+        chip.title = a.name + ' — imagen o documento: usa su nombre en src="" o href=""';
+        chip.innerHTML = `<span class="dot" style="background:var(--asset)"></span><span>${baseNameOf(a.name)}</span><span class="del">✕</span>`;
+        chip.querySelector('.del').onclick = (e) => { e.stopPropagation(); deleteAsset(i); };
+        fileRow.appendChild(chip);
+      }
+    });
   });
-  assets.forEach((a, i) => {
-    const chip = document.createElement('div');
-    chip.className = 'file-chip asset';
-    chip.title = 'Imagen o documento: usa su nombre en src="" o href=""';
-    chip.innerHTML = `<span class="dot" style="background:var(--asset)"></span><span>${a.name}</span><span class="del">✕</span>`;
-    chip.querySelector('.del').onclick = (e) => { e.stopPropagation(); deleteAsset(i); };
-    fileRow.appendChild(chip);
-  });
+
   const add = document.createElement('div');
   add.className = 'file-chip add';
   add.textContent = '+ archivo';
@@ -278,6 +319,24 @@ function renderFiles(){
   addAsset.textContent = '+ imagen/doc';
   addAsset.onclick = () => assetInput.click();
   fileRow.appendChild(addAsset);
+
+  const importBtn = document.createElement('div');
+  importBtn.className = 'file-chip add';
+  importBtn.textContent = '⭱ importar';
+  importBtn.onclick = () => importInput.click();
+  fileRow.appendChild(importBtn);
+
+  const importFolderBtn = document.createElement('div');
+  importFolderBtn.className = 'file-chip add';
+  importFolderBtn.textContent = '📁 importar carpeta';
+  importFolderBtn.onclick = () => importFolderInput.click();
+  fileRow.appendChild(importFolderBtn);
+
+  const clearBtn = document.createElement('div');
+  clearBtn.className = 'file-chip add danger';
+  clearBtn.textContent = '🗑 borrar todo';
+  clearBtn.onclick = openClearModal;
+  fileRow.appendChild(clearBtn);
 
   const htmlFiles = files.filter(f => detectType(f.name)==='html');
   previewSelect.innerHTML = htmlFiles.map(f => `<option value="${f.name}">${f.name}</option>`).join('');
@@ -297,34 +356,46 @@ function deleteFile(i){
   if(activeIndex >= files.length) activeIndex = files.length - 1;
   selectFile(activeIndex);
   updatePreview();
+  scheduleAutoSave();
 }
 
 function deleteAsset(i){
   assets.splice(i,1);
   renderFiles();
   updatePreview();
+  scheduleAutoSave();
 }
 
 const assetInput = document.getElementById('assetInput');
 assetInput.addEventListener('change', () => {
-  const chosen = Array.from(assetInput.files || []);
-  chosen.forEach(f => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      let name = f.name;
-      // evita choques de nombre agregando un sufijo numérico
-      while(nameTaken(name)){
-        const dot = name.lastIndexOf('.');
-        name = dot > -1 ? `${name.slice(0,dot)}-2${name.slice(dot)}` : name + '-2';
-      }
-      assets.push({name, dataUrl: reader.result});
-      renderFiles();
-      updatePreview();
-    };
-    reader.readAsDataURL(f);
-  });
+  importFileList(assetInput.files, true);
   assetInput.value = '';
 });
+
+const importInput = document.getElementById('importInput');
+const importFolderInput = document.getElementById('importFolderInput');
+function importFileList(fileList, forceAsset){
+  Array.from(fileList || []).forEach(f => {
+    let name = (f.webkitRelativePath && f.webkitRelativePath.length) ? f.webkitRelativePath : f.name;
+    while(nameTaken(name)){
+      const dot = name.lastIndexOf('.');
+      name = dot > -1 ? `${name.slice(0,dot)}-2${name.slice(dot)}` : name + '-2';
+    }
+    const isCode = !forceAsset && /\.(html?|css|js)$/i.test(name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      if(isCode) files.push({name: name.replace(/\.htm$/i, '.html'), content: reader.result});
+      else assets.push({name, dataUrl: reader.result});
+      renderFiles();
+      updatePreview();
+      scheduleAutoSave();
+    };
+    if(isCode) reader.readAsText(f);
+    else reader.readAsDataURL(f);
+  });
+}
+importInput.addEventListener('change', () => { importFileList(importInput.files, false); importInput.value = ''; });
+importFolderInput.addEventListener('change', () => { importFileList(importFolderInput.files, false); importFolderInput.value = ''; });
 
 const fileOverlay = document.getElementById('fileOverlay');
 const fileNameInput = document.getElementById('fileNameInput');
@@ -1494,6 +1565,7 @@ function formatCode(){
   editor.value = result;
   editor.selectionStart = editor.selectionEnd = 0;
   updatePreview();
+  scheduleAutoSave();
 }
 document.getElementById('formatBtn').addEventListener('click', formatCode);
 /* ---------- fin formateador ---------- */
@@ -1572,13 +1644,21 @@ function crc32(bytes){
 const u16 = n => [n & 0xff, (n >> 8) & 0xff];
 const u32 = n => [n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >> 24) & 0xff];
 
+function dataUrlToBytes(dataUrl){
+  const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
 function buildZip(items){
   const enc = new TextEncoder();
   const localParts = [], centralParts = [];
   let offset = 0;
   items.forEach(f => {
     const nameBytes = enc.encode(f.name);
-    const data = enc.encode(f.content);
+    const data = f.bytes ? f.bytes : enc.encode(f.content);
     const crc = crc32(data);
     const dosTime = 0, dosDate = 0x21;
     const local = new Uint8Array([
@@ -1619,7 +1699,9 @@ function buildZip(items){
 document.getElementById('downloadBtn').addEventListener('click', () => {
   save();
   try{
-    const bytes = buildZip(files);
+    const items = files.map(f => ({name: f.name, content: f.content}))
+      .concat(assets.map(a => ({name: a.name, bytes: dataUrlToBytes(a.dataUrl)})));
+    const bytes = buildZip(items);
     const blob = new Blob([bytes], {type:'application/zip'});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1635,9 +1717,107 @@ document.getElementById('downloadBtn').addEventListener('click', () => {
 });
 
 // init
-editor.value = files[0].content;
-renderFiles();
-updatePreview();
+/* ---------- guardado persistente (IndexedDB: aguanta reinicios del dispositivo) ---------- */
+// Usamos IndexedDB en vez de localStorage porque los proyectos con imágenes/documentos
+// pesan más de lo que localStorage permite (~5 MB) y esos guardados fallarían en silencio.
+// IndexedDB persiste igual en el dispositivo, sin conexión, y no se borra al apagarlo.
+const DB_NAME = 'html-master-editor-db';
+const STORE = 'project';
+let dbPromise = null;
+function openDB(){
+  if(dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    if(!('indexedDB' in window)){ reject(new Error('sin IndexedDB')); return; }
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore(STORE); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dbPromise;
+}
+function showSaveStatus(text){
+  const el = document.getElementById('saveStatus');
+  if(!el) return;
+  el.textContent = text;
+  el.style.opacity = '1';
+  clearTimeout(showSaveStatus._t);
+  showSaveStatus._t = setTimeout(() => { el.style.opacity = '0'; }, 1600);
+}
+async function saveProject(){
+  try{
+    const db = await openDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readwrite');
+      tx.objectStore(STORE).put({ files, assets, savedAt: Date.now() }, 'current');
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+    showSaveStatus('· guardado');
+  }catch(err){
+    showSaveStatus('· sin guardar');
+  }
+}
+async function loadProject(){
+  try{
+    const db = await openDB();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readonly');
+      const req = tx.objectStore(STORE).get('current');
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  }catch(err){ return null; }
+}
+async function clearProjectStorage(){
+  try{
+    const db = await openDB();
+    await new Promise((resolve) => {
+      const tx = db.transaction(STORE, 'readwrite');
+      tx.objectStore(STORE).delete('current');
+      tx.oncomplete = resolve;
+      tx.onerror = resolve;
+    });
+  }catch(err){ /* nada que borrar */ }
+}
+let autoSaveTimer = null;
+function scheduleAutoSave(){
+  clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(saveProject, 800);
+}
+/* ---------- fin guardado persistente ---------- */
+
+/* ---------- borrar todo ---------- */
+const clearOverlay = document.getElementById('clearOverlay');
+function openClearModal(){ clearOverlay.classList.add('open'); }
+function closeClearModal(){ clearOverlay.classList.remove('open'); }
+document.getElementById('clearCancelBtn').addEventListener('click', closeClearModal);
+clearOverlay.addEventListener('click', (e) => { if(e.target === clearOverlay) closeClearModal(); });
+document.getElementById('clearConfirmBtn').addEventListener('click', async () => {
+  files = [{name:'index.html', content:'<!DOCTYPE html>\n<html lang="es">\n<head>\n  <meta charset="UTF-8">\n  <title>Nueva página</title>\n</head>\n<body>\n  \n</body>\n</html>'}];
+  assets = [];
+  activeIndex = 0;
+  editor.value = files[0].content;
+  activeFileName.textContent = files[0].name;
+  closeClearModal();
+  renderFiles();
+  updatePreview();
+  await clearProjectStorage();
+  await saveProject();
+});
+/* ---------- fin borrar todo ---------- */
+
+(async function init(){
+  const saved = await loadProject();
+  if(saved && Array.isArray(saved.files) && saved.files.length){
+    files = saved.files;
+    assets = Array.isArray(saved.assets) ? saved.assets : [];
+    activeIndex = 0;
+  }
+  editor.value = files[activeIndex] ? files[activeIndex].content : '';
+  activeFileName.textContent = files[activeIndex] ? files[activeIndex].name : '';
+  renderFiles();
+  updatePreview();
+})();
 
 // Registro del Service Worker para instalacion como PWA y uso sin conexion.
 // Solo funciona cuando el archivo se sirve por HTTPS (o localhost) junto a sw.js,
