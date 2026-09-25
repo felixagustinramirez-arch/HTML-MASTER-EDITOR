@@ -18,7 +18,7 @@
   :root{
     --bg:#0f0f13; --panel:#17171d; --panel2:#1c1c24; --border:#2a2a33;
     --text:#e7e5e0; --muted:#89858f; --accent:#ffb545; --accent-dim:#4a3a1e;
-    --html:#ff8a65; --css:#5eb8ff; --js:#ffe066; --live:#5fd97a;
+    --html:#ff8a65; --css:#5eb8ff; --js:#ffe066; --asset:#b48eff; --live:#5fd97a;
     --mono:ui-monospace,'SF Mono','Cascadia Code','JetBrains Mono',Consolas,monospace;
     --ui:-apple-system,'Segoe UI',Roboto,system-ui,sans-serif;
     box-sizing:border-box;
@@ -75,6 +75,7 @@
   .file-chip .del{color:var(--muted);font-size:.85rem;padding-left:.15rem}
   .file-chip .del:active{color:#ff6b6b}
   .file-chip.add{color:var(--accent);border-style:dashed}
+  .file-chip.asset{cursor:default}
 
   main{flex:1;display:flex;flex-direction:column;min-height:0}
   .pane{flex:1;display:none;min-height:0;flex-direction:column}
@@ -150,11 +151,13 @@
 </header>
 
 <div class="files" id="fileRow"></div>
+<input type="file" id="assetInput" accept="image/*,.pdf,.svg,.ico,.txt,.json,.csv,.woff,.woff2,.mp3,.mp4,.wav,.webm" multiple style="display:none">
 
 <main>
   <section class="pane active" id="codePane">
     <div class="pane-head">
       <span class="fname" id="activeFileName">index.html</span>
+      <button class="btn" id="formatBtn" style="margin-left:auto">✨ Formatear</button>
     </div>
     <textarea id="editor" spellcheck="false"></textarea>
   </section>
@@ -228,7 +231,13 @@ button {
   alert('Funciona!');
 });`}
 ];
+let assets = []; // imágenes y documentos: [{name, dataUrl}]
 let activeIndex = 0;
+
+function nameTaken(name){
+  const n = name.toLowerCase();
+  return files.some(f => f.name.toLowerCase() === n) || assets.some(a => a.name.toLowerCase() === n);
+}
 
 const fileRow = document.getElementById('fileRow');
 const editor = document.getElementById('editor');
@@ -250,11 +259,25 @@ function renderFiles(){
     chip.querySelector('.del').onclick = (e) => { e.stopPropagation(); deleteFile(i); };
     fileRow.appendChild(chip);
   });
+  assets.forEach((a, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'file-chip asset';
+    chip.title = 'Imagen o documento: usa su nombre en src="" o href=""';
+    chip.innerHTML = `<span class="dot" style="background:var(--asset)"></span><span>${a.name}</span><span class="del">✕</span>`;
+    chip.querySelector('.del').onclick = (e) => { e.stopPropagation(); deleteAsset(i); };
+    fileRow.appendChild(chip);
+  });
   const add = document.createElement('div');
   add.className = 'file-chip add';
   add.textContent = '+ archivo';
   add.onclick = addFile;
   fileRow.appendChild(add);
+
+  const addAsset = document.createElement('div');
+  addAsset.className = 'file-chip add';
+  addAsset.textContent = '+ imagen/doc';
+  addAsset.onclick = () => assetInput.click();
+  fileRow.appendChild(addAsset);
 
   const htmlFiles = files.filter(f => detectType(f.name)==='html');
   previewSelect.innerHTML = htmlFiles.map(f => `<option value="${f.name}">${f.name}</option>`).join('');
@@ -276,6 +299,33 @@ function deleteFile(i){
   updatePreview();
 }
 
+function deleteAsset(i){
+  assets.splice(i,1);
+  renderFiles();
+  updatePreview();
+}
+
+const assetInput = document.getElementById('assetInput');
+assetInput.addEventListener('change', () => {
+  const chosen = Array.from(assetInput.files || []);
+  chosen.forEach(f => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      let name = f.name;
+      // evita choques de nombre agregando un sufijo numérico
+      while(nameTaken(name)){
+        const dot = name.lastIndexOf('.');
+        name = dot > -1 ? `${name.slice(0,dot)}-2${name.slice(dot)}` : name + '-2';
+      }
+      assets.push({name, dataUrl: reader.result});
+      renderFiles();
+      updatePreview();
+    };
+    reader.readAsDataURL(f);
+  });
+  assetInput.value = '';
+});
+
 const fileOverlay = document.getElementById('fileOverlay');
 const fileNameInput = document.getElementById('fileNameInput');
 const fileNameErr = document.getElementById('fileNameErr');
@@ -292,7 +342,7 @@ function createFileFromModal(){
   const name = fileNameInput.value.trim();
   if(!name){ fileNameErr.textContent = 'Escribe un nombre.'; return; }
   if(!/\.(html|css|js)$/i.test(name)){ fileNameErr.textContent = 'Debe terminar en .html, .css o .js'; return; }
-  if(files.some(f => f.name.toLowerCase() === name.toLowerCase())){ fileNameErr.textContent = 'Ese archivo ya existe.'; return; }
+  if(nameTaken(name)){ fileNameErr.textContent = 'Ese nombre ya existe.'; return; }
   const t = detectType(name);
   const starter = t==='html' ? '<!DOCTYPE html>\n<html lang="es">\n<head>\n  <meta charset="UTF-8">\n  <title>Nueva página</title>\n</head>\n<body>\n  \n</body>\n</html>' : '';
   files.push({name, content: starter});
@@ -307,6 +357,19 @@ document.getElementById('fileCancelBtn').addEventListener('click', closeFileModa
 fileOverlay.addEventListener('click', (e) => { if(e.target === fileOverlay) closeFileModal(); });
 fileNameInput.addEventListener('keydown', (e) => { if(e.key==='Enter') createFileFromModal(); if(e.key==='Escape') closeFileModal(); });
 
+function resolveAssets(text){
+  assets.forEach(a => {
+    const esc = a.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // src="foto.png" / href="foto.png" (con o sin ./ delante)
+    const attrRe = new RegExp('(src|href)(\\s*=\\s*)(["\'])(?:\\./)?' + esc + '\\3', 'gi');
+    text = text.replace(attrRe, (m, attr, eq, q) => `${attr}${eq}${q}${a.dataUrl}${q}`);
+    // url(foto.png) / url("foto.png") en CSS
+    const urlRe = new RegExp('url\\(\\s*([\'"]?)(?:\\./)?' + esc + '\\1\\s*\\)', 'gi');
+    text = text.replace(urlRe, (m, q) => `url(${q}${a.dataUrl}${q})`);
+  });
+  return text;
+}
+
 function buildPreview(entryName){
   const entry = files.find(f => f.name === entryName) || files.find(f => detectType(f.name)==='html');
   if(!entry) return '<p style="font-family:sans-serif;padding:2rem;color:#888">No hay ningún archivo HTML.</p>';
@@ -314,14 +377,16 @@ function buildPreview(entryName){
   // quitar <link rel=stylesheet> y <script src=...> propios para no duplicar, e inyectar todo el CSS y JS
   html = html.replace(/<link[^>]+rel=["']stylesheet["'][^>]*>/gi, '');
   html = html.replace(/<script[^>]+src=["'][^"']*["'][^>]*>\s*<\/script>/gi, '');
-  const css = files.filter(f => detectType(f.name)==='css').map(f => f.content).join('\n');
+  html = resolveAssets(html);
+  const css = resolveAssets(files.filter(f => detectType(f.name)==='css').map(f => f.content).join('\n'));
   const js = files.filter(f => detectType(f.name)==='js').map(f => f.content).join('\n');
   const htmlNames = files.filter(f => detectType(f.name)==='html').map(f => f.name);
   const styleTag = `<style>${css}</style>`;
   const scriptTag = `<script>${js}<\/script>`;
   // navegación entre las páginas del propio proyecto: intercepta clics en <a href="otro.html">
   // para cambiar la vista previa al archivo virtual correspondiente, en vez de que el iframe
-  // intente cargar una URL real (que no existe y produce 404).
+  // intente cargar una URL real (que no existe y produce 404). Los href ya resueltos a data:
+  // (imágenes/documentos subidos) se dejan pasar de largo y se abren/descargan normalmente.
   const navScript = `<script>(function(){
   var HTML_FILES = ${JSON.stringify(htmlNames)};
   function norm(h){ h = h.split('#')[0].split('?')[0]; h = h.replace(/^\\.?\\/+/, ''); return h.toLowerCase(); }
@@ -330,7 +395,7 @@ function buildPreview(entryName){
     if(!a) return;
     var href = a.getAttribute('href');
     if(!href || href.charAt(0) === '#') return;
-    if(/^[a-z][a-z0-9+.\\-]*:/i.test(href)) return; // enlaces externos, mailto:, tel:, etc. se comportan normal
+    if(/^[a-z][a-z0-9+.\\-]*:/i.test(href)) return; // externos, mailto:, tel:, data: (imágenes/docs) se comportan normal
     if(a.target === '_blank') return;
     var target = norm(href);
     var match = HTML_FILES.find(function(n){ return n.toLowerCase() === target; });
@@ -1246,6 +1311,193 @@ function autoCloseTag(){
 }
 /* ---------- fin cierre automático ---------- */
 
+/* ---------- indentación automática (Enter sube/baja de nivel solo) ---------- */
+function lineInfoAt(pos){
+  const before = editor.value.slice(0, pos);
+  const lastNl = before.lastIndexOf('\n');
+  return { lineStart: lastNl + 1, lineText: before.slice(lastNl + 1) };
+}
+
+function handleSmartEnter(){
+  const pos = editor.selectionStart;
+  const val = editor.value;
+  const before = val.slice(0, pos);
+  const after = val.slice(pos);
+  const { lineText } = lineInfoAt(pos);
+  const indent = (lineText.match(/^[ \t]*/) || [''])[0];
+  const trimmed = lineText.trim();
+  const lastChar = trimmed.slice(-1);
+
+  let deeper = false, closerRightHere = false;
+
+  if(PAIRS[lastChar] && after.startsWith(PAIRS[lastChar])){
+    deeper = true; closerRightHere = true;
+  } else if(lastChar === '{' || lastChar === '[' || lastChar === '('){
+    deeper = true;
+  } else {
+    // ¿la línea termina en una etiqueta HTML contenedora recién abierta?
+    const m = trimmed.match(/<([a-zA-Z][a-zA-Z0-9-]*)((?:\s[^<>]*)?)>$/);
+    if(m){
+      const tag = m[1].toLowerCase();
+      const attrs = m[2] || '';
+      if(!VOID_TAGS.has(tag) && !attrs.trim().endsWith('/')){
+        deeper = true;
+        if(after.toLowerCase().startsWith('</' + tag + '>')) closerRightHere = true;
+      }
+    }
+  }
+
+  const extra = deeper ? '  ' : '';
+  let insertion, cursorOffset;
+  if(closerRightHere){
+    insertion = '\n' + indent + extra + '\n' + indent;
+    cursorOffset = 1 + (indent + extra).length;
+  } else {
+    insertion = '\n' + indent + extra;
+    cursorOffset = insertion.length;
+  }
+  editor.value = before + insertion + after;
+  editor.selectionStart = editor.selectionEnd = before.length + cursorOffset;
+  save(); updatePreview();
+}
+
+function dedentBeforeCloser(key){
+  const s0 = editor.selectionStart;
+  if(editor.selectionEnd !== s0) return;
+  const { lineStart, lineText } = lineInfoAt(s0);
+  if(!/^[ \t]+$/.test(lineText)) return; // solo si la línea tiene únicamente espacios antes del cursor
+  const reduced = lineText.slice(0, Math.max(0, lineText.length - 2));
+  editor.value = editor.value.slice(0, lineStart) + reduced + editor.value.slice(s0);
+  editor.selectionStart = editor.selectionEnd = lineStart + reduced.length;
+}
+/* ---------- fin indentación automática ---------- */
+
+/* ---------- formateador de código (reordena etiquetas/bloques anidados en niveles) ---------- */
+function formatHTML(src){
+  const re = /<!--[\s\S]*?-->|<!DOCTYPE[^>]*>|<[^>]+>|[^<]+/gi;
+  const raw = src.match(re) || [];
+  const tokens = [];
+  raw.forEach(t => {
+    if(t.startsWith('<')) tokens.push({type:'tag', raw:t});
+    else { const trimmed = t.trim(); if(trimmed) tokens.push({type:'text', raw:trimmed}); }
+  });
+  const lines = [];
+  let depth = 0, i = 0;
+  while(i < tokens.length){
+    const tok = tokens[i];
+    if(tok.type === 'text'){ lines.push({depth, text: tok.raw}); i++; continue; }
+    const rawTag = tok.raw;
+    if(rawTag.startsWith('<!--') || /^<!DOCTYPE/i.test(rawTag)){ lines.push({depth, text: rawTag}); i++; continue; }
+    if(/^<\//.test(rawTag)){ depth = Math.max(0, depth-1); lines.push({depth, text: rawTag}); i++; continue; }
+    const selfClose = /\/>\s*$/.test(rawTag);
+    const nameMatch = rawTag.match(/^<([a-zA-Z][a-zA-Z0-9-]*)/);
+    const tag = nameMatch ? nameMatch[1].toLowerCase() : '';
+    const isVoid = VOID_TAGS.has(tag);
+    if(selfClose || isVoid){ lines.push({depth, text: rawTag}); i++; continue; }
+    const next1 = tokens[i+1], next2 = tokens[i+2];
+    const closeRe = new RegExp('^</' + tag + '>$', 'i');
+    if(next1 && next1.type === 'text' && next2 && next2.type === 'tag' && closeRe.test(next2.raw)){
+      lines.push({depth, text: rawTag + next1.raw + next2.raw}); i += 3; continue;
+    }
+    if(next1 && next1.type === 'tag' && closeRe.test(next1.raw)){
+      lines.push({depth, text: rawTag + next1.raw}); i += 2; continue;
+    }
+    lines.push({depth, text: rawTag}); depth++; i++;
+  }
+  return lines.map(l => '  '.repeat(l.depth) + l.text).join('\n');
+}
+
+function formatCSS(src){
+  let out = '', depth = 0, buf = '', i = 0;
+  const n = src.length;
+  while(i < n){
+    const ch = src[i];
+    if(ch === '/' && src[i+1] === '*'){
+      const end = src.indexOf('*/', i+2);
+      const comment = end === -1 ? src.slice(i) : src.slice(i, end+2);
+      if(buf.trim()){ out += '  '.repeat(depth) + buf.trim() + '\n'; buf=''; }
+      out += '  '.repeat(depth) + comment.trim() + '\n';
+      i = end === -1 ? n : end+2; continue;
+    }
+    if(ch === '{'){ out += '  '.repeat(depth) + buf.trim() + ' {\n'; depth++; buf=''; i++; continue; }
+    if(ch === '}'){
+      if(buf.trim()) out += '  '.repeat(depth) + buf.trim().replace(/;?$/, ';') + '\n';
+      buf=''; depth = Math.max(0, depth-1); out += '  '.repeat(depth) + '}\n'; i++; continue;
+    }
+    if(ch === ';'){
+      const decl = buf.trim().replace(/^([a-zA-Z-]+)\s*:\s*/, '$1: ');
+      if(decl) out += '  '.repeat(depth) + decl + ';\n';
+      buf=''; i++; continue;
+    }
+    buf += ch; i++;
+  }
+  if(buf.trim()) out += '  '.repeat(depth) + buf.trim().replace(/^([a-zA-Z-]+)\s*:\s*/, '$1: ') + '\n';
+  return out.trim();
+}
+
+function formatJS(src){
+  let out = '', depth = 0, parenDepth = 0, buf = '', i = 0;
+  const n = src.length;
+  function flush(){ const t = buf.trim(); if(t) out += '  '.repeat(depth) + t + '\n'; buf=''; }
+  while(i < n){
+    const ch = src[i];
+    if(ch === '/' && src[i+1] === '/'){
+      const end = src.indexOf('\n', i);
+      const comment = end === -1 ? src.slice(i) : src.slice(i, end);
+      flush(); out += '  '.repeat(depth) + comment.trim() + '\n';
+      i = end === -1 ? n : end+1; continue;
+    }
+    if(ch === '/' && src[i+1] === '*'){
+      const end = src.indexOf('*/', i+2);
+      const comment = end === -1 ? src.slice(i) : src.slice(i, end+2);
+      flush(); out += '  '.repeat(depth) + comment.trim() + '\n';
+      i = end === -1 ? n : end+2; continue;
+    }
+    if(ch === '"' || ch === "'" || ch === '`'){
+      const quote = ch; let j = i+1, str = ch;
+      while(j < n){
+        str += src[j];
+        if(src[j] === '\\' && j+1 < n){ j++; str += src[j]; j++; continue; }
+        if(src[j] === quote){ j++; break; }
+        j++;
+      }
+      buf += str; i = j; continue;
+    }
+    if(ch === '('){ parenDepth++; buf += ch; i++; continue; }
+    if(ch === ')'){ parenDepth = Math.max(0, parenDepth-1); buf += ch; i++; continue; }
+    if(ch === '{'){ buf += ' {'; flush(); depth++; i++; continue; }
+    if(ch === '}'){
+      flush(); depth = Math.max(0, depth-1); buf = '}';
+      let j = i+1;
+      while(j<n && /[;,)]/.test(src[j])){ buf += src[j]; j++; }
+      flush(); i = j; continue;
+    }
+    if(ch === ';' && parenDepth === 0){ buf += ';'; flush(); i++; continue; }
+    if(ch === '\n'){ if(buf.trim()!=='') buf += ' '; i++; continue; }
+    buf += ch; i++;
+  }
+  flush();
+  return out.trim();
+}
+
+function formatCode(){
+  const f = files[activeIndex];
+  const type = detectType(f.name);
+  let result;
+  try{
+    if(type === 'html') result = formatHTML(f.content);
+    else if(type === 'css') result = formatCSS(f.content);
+    else result = formatJS(f.content);
+  }catch(err){ return; }
+  if(!result) return;
+  f.content = result;
+  editor.value = result;
+  editor.selectionStart = editor.selectionEnd = 0;
+  updatePreview();
+}
+document.getElementById('formatBtn').addEventListener('click', formatCode);
+/* ---------- fin formateador ---------- */
+
 editor.addEventListener('input', (e) => {
   save(); updatePreview(); showAutocomplete();
   if(e.data === '>' && detectType(files[activeIndex].name)==='html') autoCloseTag();
@@ -1259,6 +1511,11 @@ editor.addEventListener('keydown', (e) => {
     if(e.key === 'Enter'){ e.preventDefault(); acceptAutocomplete(acSel); return; }
     if(e.key === 'Escape'){ hideAutocomplete(); return; }
   }
+  if(e.key === 'Enter'){
+    e.preventDefault();
+    handleSmartEnter();
+    return;
+  }
   if(e.key === 'Tab'){
     e.preventDefault();
     if(acItems.length){ acceptAutocomplete(acSel); return; }
@@ -1267,6 +1524,9 @@ editor.addEventListener('keydown', (e) => {
     editor.selectionStart = editor.selectionEnd = s + 2;
     save(); updatePreview();
     return;
+  }
+  if(e.key === '}' || e.key === ']' || e.key === ')'){
+    dedentBeforeCloser(e.key);
   }
   const s0 = editor.selectionStart, e0 = editor.selectionEnd;
   // saltar sobre el cierre si ya está justo ahí (ej. escribir " al lado de una " existente)
